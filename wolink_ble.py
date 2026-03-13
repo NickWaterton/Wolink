@@ -572,7 +572,7 @@ class WOLINK:
     async def scan_devices(self, duration: float = 10.0):
         """
         Scan for Wolink ESL devices (name prefix 'WL').
-        manufacturer ID in decimal 48042 = 0xBBEA. That's the Zhsunyco/Wolink company identifier in the Bluetooth SIG manufacturer registry.
+        manufacturer ID in decimal 48042 = 0xBBEA (actual data is 0xBBAA). That's the Zhsunyco/Wolink company identifier in the Bluetooth SIG manufacturer registry.
         """
         self.log.info(f"Scanning for Wolink ESL devices ({duration}s)...")
         wolink_devices = []
