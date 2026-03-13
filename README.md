@@ -40,7 +40,7 @@ Example: python wolink_ble.py AA:BB:CC:DD:EE:FF image.png
 ## Image Format
 - 8000 bytes total, 2 bits per pixel, column-major scan, y-flipped in RAM
 - `0b00=BLACK, 0b01=WHITE, 0b10=YELLOW, 0b11=RED`
-- 32 bytes per column × 250 columns
+- 32 bytes per column × 250 columns (2.13" ESL)
 
 ## BLE Protocol
 | Characteristic | UUID |
@@ -58,7 +58,7 @@ AES-128-CBC, zero IV. Read challenge from Auth characteristic, encrypt with key,
 
 ### Status
 - Byte 0: `0xFF`=busy, `0x00`=idle
-- Byte 1: `0x00`=ok, `0x02`=EPD write error, `0x03`=decompression error
+- Byte 1: `0x00`=ok, `0x02`=EPD write error, `0x03`=decompression error, `0x04` =OTA error `0x05` =Unlock Failed
 
 ### Notifications (Image characteristic)
 - `0xF00B` — refresh starting

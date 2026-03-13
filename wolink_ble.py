@@ -119,10 +119,11 @@ N Waterton 12/3/2026   V 1.0.0 : Initial Release
 import asyncio
 import argparse
 import logging
+import platform
 import sys
 from pathlib import Path
 
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient, BleakScanner, BleakError
 from bleak.backends.scanner import AdvertisementData
 from bleak.backends.device import BLEDevice
 from Crypto.Cipher import AES
@@ -528,6 +529,9 @@ class WOLINK:
             try:
                 async with BleakClient(device, timeout=30.0) as client:
                     self.log.info(f"Connected: {client.is_connected}")
+                    if platform.system() == "Linux":
+                        self.mtu = client.mtu_size
+                        self.log.debug(f"MTU: {self.mtu}")
                     # Discover services
                     await self.discover_services(client)
                     if not self.chars.get('data'):
@@ -538,7 +542,7 @@ class WOLINK:
                     # authenticate for writing
                     await self.authenticate(client)
                     return await coro(client, *args, **kwargs)
-            except TimeoutError as e:
+            except (BleakError, TimeoutError) as e:
                 self.log.warning(f'Timeout error connecting to {self.mac_address}: {e}')
             except asyncio.CancelledError:
                 return
