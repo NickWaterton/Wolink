@@ -1,0 +1,347 @@
+WoPda (Wolink ESL) Protocol Documentation
+Reverse-engineered from decompiled Android APK WoPda v1.4.2 (package: Ld29lc2w.new_pda).
+
+Flutter app by Wolink (wolink.com.cn) for managing Electronic Shelf Label (ESL) e-paper display tags via BLE and NFC.
+
+Table of Contents
+BLE Protocol
+NFC Protocol
+Encryption
+Data Models
+API Endpoints
+Supported Hardware
+BLE Protocol
+Device Discovery
+Scan filter: Device name prefix "WL" (Wolink)
+Scan duration: 25 seconds
+BLE library: flutter_blue_plus
+Custom Service UUIDs
+UUIDs are ASCII-encoded reversed strings:
+
+UUID	Decoded
+30323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2020
+31323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2021
+32323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2022
+33323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2023
+34323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2024
+35323032-4C53-4545-4C42-4B4E494C4F57	WOLINKBLEESL2025
+Connection Flow
+Connect to device (with timeout)
+Discover services
+Validate characteristics exist
+Generate and write BLE secret (genBleSecret()) for authentication
+Execute command sequence based on task type
+Transfer image data in chunks
+Report result to server
+Packet Structure
+MTU calculation: payload_size = MTU - 9
+
+Each packet is a byte array with the following structure:
+
+Field	Size	Description
+Length	1 byte	Packet data length indicator
+Header	1 byte	Constant 0x14A (330 SMI / 165 actual)
+Data length	4 bytes	Little-endian, split into individual bytes
+CRC16	2 bytes	Low byte first, then high byte
+Payload	variable	Up to MTU - 9 bytes
+Command Opcodes
+Commands use the format "01-00-00-XX" where XX is the opcode (Base64-encoded strings):
+
+Opcode	Hex	Description
+01-00-00-01	0x01	Command type 1
+01-00-00-03	0x03	Command type 3
+01-00-00-06	0x06	Command type 6
+01-00-00-07	0x07	Command type 7
+01-00-00-09	0x09	Command type 9
+01-00-00-0C	0x0C	Command type 12
+01-00-00-12	0x12	Command type 18
+01-00-00-13	0x13	Command type 19
+The actBle() function (0x5eeb3c, size 0x1af4) implements the state machine that selects opcodes based on the task type via contains() checks.
+
+CRC16 Checksum
+Function: crc16Cal() at address 0x5f0664 in common_utils.dart
+Applied to packet data before transmission
+Result split into 2 bytes:
+crc_low = crc16 & 0xFF
+crc_high = (crc16 >> 8) & 0xFF
+Data Transfer
+Image data is Base64-decoded (Base64Codec::decode() at 0x5f0800)
+Split into chunks of MTU - 9 bytes
+Each chunk wrapped with header (opcode + constant + length + CRC)
+Written to BLE characteristic via BluetoothCharacteristic::write()
+Each write is awaited before sending the next chunk
+Task Workflow
+Server                    App                     ESL Tag
+  |                        |                        |
+  |-- fetchBleTasks() ---->|                        |
+  |<-- task list ----------|                        |
+  |                        |-- scanBle("WL") ------>|
+  |                        |<-- device found -------|
+  |                        |-- connect() ---------->|
+  |                        |-- discoverServices() ->|
+  |                        |-- genBleSecret() ----->|
+  |                        |-- write(secret) ------>|
+  |-- download image ----->|                        |
+  |                        |-- write(chunks) ------>|
+  |                        |<-- ACK ----------------|
+  |<-- reportBle() --------|                        |
+NFC Protocol
+Overview
+Library: flutter_nfc_kit
+Communication: APDU-style transceive commands
+Chunk size: 250 bytes per chunk
+No encryption in NFC protocol layer
+Command Frame Format
+Byte 0:    0xF0 (240)  - Command header (always)
+Byte 1:    Command type (0xD2, 0xD4, 0xD8, 0xDE)
+Byte 2:    Subcommand / Tag ID
+Byte 3:    Parameter
+Byte 4+:   Data payload
+NFC Commands
+Command	Bytes	Description
+Write image data	F0 D2 <id> FA <page> <data...>	Write 250-byte chunk to tag
+Refresh display	F0 D4 05 80 00	Trigger e-paper display refresh
+Read own data	F0 D8 00 00 05 00 00 00 00 FA	Read device configuration
+Poll result	F0 DE 00 00 01	Poll for command completion status
+NFC Methods
+Method	Address	Description
+nfcWriteImgDat()	-	Write image in 250-byte chunks, frame header 0xF0 0xD2
+nfcSendRefreshCmd()	-	Send [0xF0, 0xD4, 0x05, 0x80, 0x00]
+nfcReadOwnData()	-	Send F0D800000500000000FA
+nfcGetResult()	0x622d50	Poll up to 1000 iterations with delay between attempts
+nfcInitScreen()	-	Send initialization command sequence
+nfcResolveSpec()	-	Parse NFC spec string with "x" delimiter
+NFC Response Status Codes
+Code	Meaning
+9000	Success
+009000	Success (alternative format)
+019000	Success (secondary)
+698A	Error - returns code 2
+6986	Error - returns code 2
+68C6	Error - returns code 4
+On communication error: "Communication error, Session invalidated"
+
+Image Write Process (NFC)
+Image data split into 250-byte (0xFA) chunks
+Each chunk wrapped in frame: [0xF0, 0xD2, tag_id, 0xFA, page_num, ...data]
+Frame size: 510 bytes (0x1FE) total
+Sent via FlutterNfcKit::transceive()
+After all chunks sent, nfcSendRefreshCmd() triggers display update
+nfcGetResult() polls for completion
+Encryption
+AES-128-CBC Configuration
+Used for BLE authentication, API response decryption, and NFC data decryption.
+
+Parameter	Value
+Algorithm	AES-128
+Mode	CBC (Cipher Block Chaining)
+Padding	PKCS7
+Library	package:encrypt (PointyCastle)
+API/NFC Encryption Key
+Hardcoded key and IV for API responses and NFC data:
+
+Key: wolinkwolink~123     (16 bytes, ASCII)
+IV:  wolinkwolinkiv!@      (16 bytes, ASCII)
+aesDecode() in common_utils.dart decrypts API responses
+NFC controller (nfc_controller.dart lines 1046-1090) uses same key/IV for tag data decryption
+BLE Secret Generation (genBleSecret())
+Function at address 0x5f1010 in common_utils.dart.
+
+Creates a 16-byte key from hardcoded values, encrypts input data with AES-128-CBC:
+
+Hardcoded array (Dart SMI-tagged values, divide by 2 for actual bytes):
+
+SMI Value	Actual Byte	Hex
+310	155	0x9B
+192	96	0x60
+318	159	0x9F
+80	40	0x28
+376	188	0xBC
+146	73	0x49
+452	226	0xE2
+174	87	0x57
+82	41	0x29
+378	189	0xBD
+246	123	0x7B
+282	141	0x8D
+484	242	0xF2
+86	43	0x2B
+136	68	0x44
+64	32	0x20
+BLE Secret Key (hex): 9B 60 9F 28 BC 49 E2 57 29 BD 7B 8D F2 2B 44 20
+
+Process:
+
+Build 16-byte key array from hardcoded values above
+Create Key object from key bytes
+Create IV object (allocated as 32-byte zero buffer)
+Initialize AES cipher with CBC mode, PKCS7 padding
+Call Encrypter.encryptBytes() on input data
+Return encrypted bytes (written to BLE characteristic for authentication)
+Security Notes
+Hardcoded key and IV in binary - easily extractable
+CBC mode with fixed/zero IV is cryptographically weak
+No key derivation function (PBKDF2, etc.)
+API uses cleartext HTTP (http://new.wolink.com.cn) - no SSL pinning
+Data Models
+BleDevice (class id: 488, size: 0x2c)
+Field	Type	Default	Description
+advName	String		Advertisement name
+id	String		Device identifier (MAC)
+rssi	int		Signal strength
+version	String		Firmware version
+battery	int		Battery level
+pid	String	"3000"	Product ID
+isReport	bool	false	Reporting flag
+Esl (class id: 497, size: 0x10)
+Field	Type	Description
+esl_code	String	ESL tag code
+product_code	String	Product code
+ap_code	String?	Access point code
+action_from	String?	Action source
+direct	List	Direct/batch actions
+Template (class id: 494, size: 0x38)
+Field	Type	Description
+id	int	Template identifier
+name	String	Template name
+code	String	Template code
+promotion	String	Promotion content
+type_code	String	Template type code
+store_code	String	Store identifier
+is_open	int	Active flag
+orientation	int	Display orientation
+License (class id: 498, size: 0x44)
+Field	Type	Default	Description
+valid	int		License validity
+has_sdr	int		SDR support
+has_ble	int		BLE support
+has_nfc	int		NFC support
+has_pad	int		PAD/tablet support
+has_led	int		LED support
+support_warehouse	int		Warehouse support
+support_office	int		Office support
+company	String		Company name
+logo	String		Logo URL/path
+target	String	"wolink"	Target platform
+permission	int		Permission level
+Other Models
+Model	Class ID	Size	Description
+BleCmd	486	0x10	BLE command structure
+BleTask	487	0x20	BLE task with image/device info
+ApListItem	484	0x1c	Access point (id, ap_code, ap_desc, online, updated_at)
+EslListItem	485	0x3c	ESL item (id, esl_code, action, action_from)
+Meeting	493	0x18	Meeting (code, name, status)
+NfcSpec	495	0x20	NFC specification
+NfcDevice	496	0x14	NFC device info
+API Endpoints
+Base URL: http://new.wolink.com.cn
+
+Authentication
+Method	Endpoint	Description
+POST	/mobile/login	User login
+BLE Operations
+Method	Endpoint	Description
+POST	/mobile/bind/ble	Bind BLE device
+POST	/mobile/unbind/ble	Unbind BLE device
+GET	/mobile/getTask/ble	Get single BLE task
+GET	/mobile/getTaskCount/ble	Get BLE task count
+GET	/mobile/getTaskList/ble	Get BLE task list
+POST	/mobile/retryTask/ble	Retry failed BLE task
+POST	/mobile/ack/ble	Acknowledge BLE task
+POST	/mobile/report/ble	Report BLE task result
+GET	/mobile/get/ble	Get BLE device info
+GET	/mobile/query/ble	Query BLE devices
+ESL Operations
+Method	Endpoint	Description
+POST	/mobile/bind/esl	Bind ESL tag
+POST	/mobile/unbind/esl	Unbind ESL tag
+GET	/mobile/get/esl	Get ESL info
+POST	/mobile/scrap/esl	Scrap ESL tag
+POST	/mobile/clear/esl	Clear ESL tag
+POST	/mobile/restore/esl	Restore ESL tag
+NFC Operations
+Method	Endpoint	Description
+POST	/mobile/bind/nfc	Bind NFC device
+POST	/mobile/refresh/nfc	Refresh NFC device
+POST	/mobile/ack/nfc	Acknowledge NFC task
+PAD/Display Operations
+Method	Endpoint	Description
+POST	/mobile/bind/pad	Bind PAD device
+POST	/mobile/unbind/pad	Unbind PAD device
+POST	/mobile/set_brightness/pad	Set PAD brightness
+Template Operations
+Method	Endpoint	Description
+POST	/mobile/set/template	Set template
+POST	/mobile/copy/template	Copy template
+GET	/mobile/queryDeluxe/template	Query deluxe templates
+POST	/mobile/trigger/task	Trigger task
+HTTP Client Configuration
+Library: Dio (Dart HTTP client)
+Connection timeout: 10 seconds
+Receive timeout: 10 seconds
+401 response: Redirects to /login
+Token storage: GetStorage with key "token"
+Host storage: GetStorage with key "host"
+BLE cache: GetStorage with key "bleDeviceMap" (JSON serialized)
+Supported Hardware
+ESL Tag Models
+Tags are identified by size (inches) and color capability:
+
+Size	BW	Red (R)	4-Color (BWRY)	Special
+1.5"	ESL-15BW	ESL-15R	ESL-15BWRY	ESL-15MR
+2.1"	ESL-21BW	ESL-21R	ESL-21BWRY	ESL-21MBW
+2.6"	ESL-26BW	ESL-26R	ESL-26BWRY	
+2.9"	ESL-29BW	ESL-29R	ESL-29BWRY	
+3.5"	ESL-35BW	ESL-35R	ESL-35BWRY	
+3.7"	ESL-37BW	ESL-37R	ESL-37BWRY	
+4.2"	ESL-42BW	ESL-42R	ESL-42BWRY	
+5.8"	ESL-58BW	ESL-58R	ESL-58BWRY	
+7.5"	ESL-75BW	ESL-75R	ESL-75BWRY	ESL-75MBW, ESL-75MBWRY, ESL-75MR
+10.2"	ESL-102BW	ESL-102R		
+13.3"	ESL-133BW	ESL-133R		
+Color codes (from strings extraction):
+
+F0 = Red
+F1 = Green
+F2 = Yellow
+F3 = Blue
+F4 = Grey
+F5 = Brown
+EPD Error Codes
+Code	Description
+EPD_INIT_ERROR	E-paper display initialization failed
+EPD_WRITE_ERROR	E-paper display write failed
+ACK_ERROR	Acknowledgement error
+Battery
+Minimum voltage: 2870 mV
+calculateBatteryPercentage() at 0x619eb0 computes percentage from voltage
+Architecture
+App Structure (GetX MVC)
+new_pda/app/
+├── modules/
+│   ├── ble/controllers/
+│   │   ├── ble_controller.dart     (455KB - main BLE orchestrator)
+│   │   └── ble_capacity.dart       (183KB - BLE protocol impl)
+│   ├── nfc/controllers/
+│   │   └── nfc_controller.dart     (NFC operations)
+│   └── _common/mixins/
+│       ├── scan_mixin.dart         (BLE scanning)
+│       └── common_mixin.dart       (shared functionality)
+├── data/
+│   ├── model/model.dart            (267KB - all data models)
+│   ├── service/
+│   │   ├── dio_service.dart        (HTTP client)
+│   │   └── global_service.dart     (auth, config, caching)
+│   └── provider/
+│       └── api_provider.dart       (API endpoint definitions)
+└── utils/
+    ├── common_utils.dart           (encryption, CRC, hex utils)
+    └── nfc_utils.dart              (NFC command helpers)
+Key Function Addresses
+Function	Address	File
+actBle()	0x5eeb3c	ble_capacity.dart
+crc16Cal()	0x5f0664	common_utils.dart
+genBleSecret()	0x5f1010	common_utils.dart
+uint8ToHex()	0x621ef8	common_utils.dart
+calculateBatteryPercentage()	0x619eb0	common_utils.dart
+nfcGetResult()	0x622d50	nfc_utils.dart
